@@ -1,0 +1,58 @@
+## Quiz generation parameters
+prepare:
+  # LLM provider (generation is Ollama-only)
+  provider: ollama
+
+  # LLM model name used for generation (Ollama)
+  # Examples: 'mistral', 'llama3:8b-instruct', 'qwen2.5:7b-instruct'
+  model: mistral
+
+  # Number of questions to generate
+  count: 5
+
+  # Output files for the generated quiz and the answer key
+  quiz: quiz.json
+  answers: answer_key.json
+
+  # Path to the Chroma vector store (persist directory). Relative or absolute is fine.
+  rag_persist: ../.chroma/baai-bge-base-en-v1-5
+
+  # Top-K documents to retrieve for context per query/topic
+  rag_k: 5
+
+  # Embedding model used (MUST match the store's embedding dimension)
+  # Common options:
+  #   - sentence-transformers/all-MiniLM-L6-v2   # 384-dim
+  #   - sentence-transformers/all-mpnet-base-v2  # 768-dim
+  #   - BAAI/bge-base-en-v1.5                    # 768-dim
+  rag_embed_model: BAAI/bge-base-en-v1.5
+
+  # Avoid reusing the last N generated question phrasings
+  avoid_recent_window: 5
+
+  # Ask the LLM to verify/normalize the answer letter (A-D)
+  verify: true
+
+  # Embedding backend selection for RAG (local only)
+  rag_local: true
+
+  # Debug/dump options:
+  #   - Provide a file path to enable, or 'none' to disable
+  #   - dump_llm_payload: appends JSON request payloads. Example: llm_payload.json
+  #   - dump_llm_response: appends raw provider responses. Example: llm_response.json
+  dump_llm_payload: llm_payload.json
+  dump_llm_response: llm_response.json
+
+  # Transport-level retries for provider calls (applies to both OpenAI and Ollama)
+  # This controls how many times to retry the underlying API call if it fails
+  # due to network or HTTP/server errors. Does NOT affect JSON parsing retries.
+  llm_retries: 2
+
+  # Maximum number of retries when parsing LLM output fails
+  max_retries: 3
+
+## Validation parameters
+validate:
+  # Input files for validation (should match the outputs above)
+  quiz: quiz.json
+  answers: answer_key.json

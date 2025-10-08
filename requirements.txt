@@ -1,0 +1,7 @@
+# Quiz-Project minimal requirements
+haystack-ai>=2.0.0
+chroma-haystack>=0.17.0
+chromadb>=0.5.0
+sentence-transformers>=2.2.2
+requests>=2.31.0
+PyYAML>=6.0.1
