@@ -48,6 +48,9 @@ class ChatConfig:
     dump_llm_payload: Optional[str]
     dump_llm_response: Optional[str]
     llm_retries: int
+    ollama_keep_alive: Optional[str]
+    ollama_url: Optional[str]
+    http_timeout: Optional[int]
 
 
 def _render_chat_prompt(history: List[Tuple[str, str]], question: str, rag_files: Dict[str, str]) -> str:
@@ -76,7 +79,7 @@ def run_chat(cfg: ChatConfig) -> int:
         dump_prompt_path=cfg.dump_ollama_prompt,
         dump_payload_path=cfg.dump_llm_payload,
         dump_response_path=cfg.dump_llm_response,
-    ))
+    ), base_url=cfg.ollama_url, http_timeout=cfg.http_timeout)
     rag = RAG(type("_Tmp", (), {
         "rag_embed_model": cfg.rag_embed_model,
         "rag_persist": cfg.rag_persist,
@@ -133,6 +136,7 @@ def run_chat(cfg: ChatConfig) -> int:
                 options=options,  # type: ignore[arg-type]
                 prompt=prompt_text,
                 retries=cfg.llm_retries,
+                keep_alive=cfg.ollama_keep_alive,
             )
             # If we're dumping payloads, append a separate debug entry with embeddings and chat context
             if cfg.dump_llm_payload:
@@ -174,6 +178,9 @@ def parse_args(argv: List[str]) -> ChatConfig:
     p.add_argument('--dump-llm-payload')
     p.add_argument('--dump-llm-response')
     p.add_argument('--llm-retries', type=int, default=2)
+    p.add_argument('--ollama-keep-alive', help='Pass-through keep_alive duration for Ollama (e.g., 5m)')
+    p.add_argument('--ollama-url', help='Override Ollama API URL (e.g., http://localhost:11434/api/generate)')
+    p.add_argument('--http-timeout', type=int, help='HTTP timeout in seconds for LLM requests')
     a = p.parse_args(argv)
     return ChatConfig(
         window_size=a.window,
@@ -190,6 +197,9 @@ def parse_args(argv: List[str]) -> ChatConfig:
         dump_llm_payload=a.dump_llm_payload,
         dump_llm_response=a.dump_llm_response,
         llm_retries=a.llm_retries,
+        ollama_keep_alive=a.ollama_keep_alive,
+        ollama_url=a.ollama_url,
+        http_timeout=a.http_timeout,
     )
 
 

@@ -131,6 +131,9 @@ def run_prepare(cfg: dict) -> int:
     dump_response = _fallback(args, cfg, 'dump_llm_response')
     model = _fallback(args, cfg, 'model', 'mistral')
     rag_persist = _fallback(args, cfg, 'rag_persist', '../.chroma')
+    ollama_keep_alive = _fallback(args, cfg, 'ollama_keep_alive', '5m')
+    ollama_url = _fallback(args, cfg, 'ollama_url')
+    http_timeout = _fallback(args, cfg, 'http_timeout')
     out = [
         str(BIN),
         str(QUIZ_DIR / 'generate_quiz.py'),
@@ -142,7 +145,12 @@ def run_prepare(cfg: dict) -> int:
         '--rag-k', str(rag_k),
         '--max-retries', str(args.get('max_retries', 2)),
         '--llm-retries', str(llm_retries),
+        '--ollama-keep-alive', str(ollama_keep_alive),
     ]
+    if ollama_url:
+        out += ['--ollama-url', str(ollama_url)]
+    if http_timeout:
+        out += ['--http-timeout', str(http_timeout)]
     if rag_embed_model:
         out += ['--rag-embed-model', str(rag_embed_model)]
     # Provider fixed to Ollama; no standalone --ollama flag
@@ -195,6 +203,9 @@ def run_chat(cfg: dict) -> int:
     dump_response = _fallback(args, cfg, 'dump_llm_response')
     model = _fallback(args, cfg, 'model', 'mistral')
     rag_persist = _fallback(args, cfg, 'rag_persist', '../.chroma/baai-bge-base-en-v1-5')
+    ollama_keep_alive = _fallback(args, cfg, 'ollama_keep_alive', '5m')
+    ollama_url = _fallback(args, cfg, 'ollama_url')
+    http_timeout = _fallback(args, cfg, 'http_timeout')
     out = [
         str(BIN), str(QUIZ_DIR / 'chat.py'),
         '--window', str(args.get('window', 6)),
@@ -204,7 +215,12 @@ def run_chat(cfg: dict) -> int:
         '--rag-k', str(rag_k),
         '--rag-embed-model', str(rag_embed_model),
         '--llm-retries', str(llm_retries),
+        '--ollama-keep-alive', str(ollama_keep_alive),
     ]
+    if ollama_url:
+        out += ['--ollama-url', str(ollama_url)]
+    if http_timeout:
+        out += ['--http-timeout', str(http_timeout)]
     if _is_true(args.get('no_rag', False)):
         out += ['--no-rag']
     if dump_payload:

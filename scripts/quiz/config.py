@@ -43,6 +43,9 @@ class Config:
     dump_rag_context: Optional[str]
     max_retries: int
     llm_retries: int
+    ollama_keep_alive: str
+    ollama_url: Optional[str]
+    http_timeout: Optional[int]
 
 
 def parse_args(argv: List[str]) -> Config:
@@ -83,6 +86,9 @@ def parse_args(argv: List[str]) -> Config:
     p.add_argument('--include-h1', nargs='+')
     p.add_argument('--dump-rag-context')
     p.add_argument('--llm-retries', type=int, default=2, help='Transport-level retries for provider calls (OpenAI/Ollama)')
+    p.add_argument('--ollama-keep-alive', default='5m', help='Duration to keep Ollama model loaded (e.g., 5m, 30s, 1h)')
+    p.add_argument('--ollama-url', help='Override Ollama API URL (e.g., http://localhost:11434/api/generate)')
+    p.add_argument('--http-timeout', type=int, help='HTTP timeout in seconds for LLM requests')
 
     a = p.parse_args(argv)
     return Config(
@@ -121,4 +127,7 @@ def parse_args(argv: List[str]) -> Config:
         dump_rag_context=a.dump_rag_context,
         max_retries=a.max_retries,
         llm_retries=a.llm_retries,
+        ollama_keep_alive=a.ollama_keep_alive,
+        ollama_url=a.ollama_url,
+        http_timeout=a.http_timeout,
     )

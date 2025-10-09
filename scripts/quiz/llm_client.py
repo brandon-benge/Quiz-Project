@@ -8,9 +8,8 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple, List
+from urllib.parse import urlparse
 
-DEFAULT_HTTP_TIMEOUT = 240
-OLLAMA_URL = "http://localhost:11434/api/generate"
 
 
 def _now_iso() -> str:
@@ -45,6 +44,7 @@ class OllamaGeneratePayload:
     # Transport-level retry settings (not formatting retries)
     retries: int = 2
     retry_delay: float = 1.0
+    keep_alive: Optional[str] = None
 
 
 class LLMClient:
@@ -56,33 +56,70 @@ class LLMClient:
     Raw response is provider-specific JSON-able object for optional logging.
     """
 
-    def __init__(self, dumps: DumpOptions | None = None):
+    def __init__(self, dumps: DumpOptions | None = None, *, base_url: Optional[str] = None, http_timeout: Optional[int] = None):
         self._requests = None
+        self._session = None
+        # Resolve Ollama URL: require constructor or environment; no hardcoded default
+        self._ollama_url: Optional[str] = base_url or os.environ.get("OLLAMA_URL")
+        if not self._ollama_url:
+            raise ValueError("Ollama URL not configured. Set via params.yaml (ollama_url) or OLLAMA_URL env var.")
+        # Resolve HTTP timeout: require constructor or environment; no hardcoded default
+        if http_timeout is not None:
+            self._timeout = int(http_timeout)
+        else:
+            env_timeout = os.environ.get("OLLAMA_HTTP_TIMEOUT")
+            if env_timeout is None:
+                raise ValueError("HTTP timeout not configured. Set via params.yaml (http_timeout) or OLLAMA_HTTP_TIMEOUT env var.")
+            try:
+                self._timeout = int(env_timeout)
+            except Exception as e:
+                raise ValueError(f"Invalid OLLAMA_HTTP_TIMEOUT env var: {env_timeout}") from e
         # OpenAI removed
         self.dumps = dumps or DumpOptions()
         # Lazy dependencies
         try:
             import requests  # type: ignore
             self._requests = requests
+            # Create a persistent Session to reuse TCP connections (keep-alive)
+            self._session = requests.Session()
+            # Hint the server to keep the connection alive ~5 minutes
+            try:
+                self._session.headers.update({'Connection': 'keep-alive', 'Keep-Alive': 'timeout=300'})
+            except Exception:
+                pass
+            try:
+                from requests.adapters import HTTPAdapter  # type: ignore
+            except Exception:
+                HTTPAdapter = None  # type: ignore
+            # Mount adapter with small pool suitable for localhost calls.
+            if 'HTTPAdapter' in globals() and HTTPAdapter is not None:
+                adapter = HTTPAdapter(pool_connections=4, pool_maxsize=8)
+                scheme = urlparse(self._ollama_url).scheme or 'http'
+                if scheme == 'https':
+                    self._session.mount('https://', adapter)
+                else:
+                    self._session.mount('http://', adapter)
         except Exception:
             self._requests = None
-        # No OpenAI dependency
+            self._session = None
 
     # --------------- Common utils ---------------
     def _dump_payload(self, prompt: str, payload: dict, response: Optional[Any] = None) -> None:
-        if self.dumps.dump_prompt_path:
+        # Only write prompt/payload before the request (response is None)
+        if response is None and self.dumps.dump_prompt_path:
             try:
                 Path(self.dumps.dump_prompt_path).write_text(prompt, encoding='utf-8')
                 _log("debug", f"Wrote full LLM prompt -> {self.dumps.dump_prompt_path}")
             except Exception as e:
                 _log("warn", f"Could not write prompt: {e}")
-        if self.dumps.dump_payload_path:
+        if response is None and self.dumps.dump_payload_path:
             try:
                 with open(self.dumps.dump_payload_path, 'a', encoding='utf-8') as f:
                     f.write(json.dumps(payload, indent=2, ensure_ascii=False) + '\n')
             except Exception as e:
                 _log("warn", f"Could not append payload: {e}")
-        if self.dumps.dump_response_path and response is not None:
+        # Only write response after the request completed
+        if response is not None and self.dumps.dump_response_path:
             try:
                 try:
                     text = json.dumps(response, indent=2, ensure_ascii=False)
@@ -107,10 +144,18 @@ class LLMClient:
 
     # --------------- Ollama ---------------
     def run_ollama(self, payload: OllamaGeneratePayload) -> Tuple[str, Any, float]:
-        if not self._requests:
-            raise RuntimeError('requests package not available')
+        # Always require and use the persistent HTTP session
+        if self._session is None:
+            raise RuntimeError('HTTP session not initialized (requests package not available)')
         prompt_text = self._render_text(payload.prompt, payload.prompt_template, payload.variables)
-        req = {'model': payload.model, 'prompt': prompt_text, 'stream': False, 'options': payload.options}
+        req = {
+            'model': payload.model,
+            'prompt': prompt_text,
+            'stream': False,
+            'options': payload.options,
+        }
+        if payload.keep_alive:
+            req['keep_alive'] = payload.keep_alive
         self._dump_payload(prompt_text, req, None)
         if payload.debug_payload:
             trunc = prompt_text[:600] + (f"... [truncated, total {len(prompt_text)} chars]" if len(prompt_text) > 600 else "")
@@ -123,7 +168,8 @@ class LLMClient:
         last_err: Optional[Exception] = None
         for attempt in range((payload.retries or 0) + 1):
             try:
-                resp = self._requests.post(OLLAMA_URL, json=req, timeout=DEFAULT_HTTP_TIMEOUT)
+                # Use the persistent session for all requests
+                resp = self._session.post(self._ollama_url, json=req, timeout=self._timeout)
                 if resp.status_code != 200:
                     raise RuntimeError(f'Ollama HTTP {resp.status_code}: {resp.text[:200]}')
                 data = resp.json()

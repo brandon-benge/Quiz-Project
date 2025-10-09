@@ -15,6 +15,9 @@ dump_llm_response: llm_response.json     # default response dump path (newline J
 rag_embed_model: BAAI/bge-base-en-v1.5   # embedding model id (MUST match store dimension)
 rag_k: 5                                 # number of retrieved chunks for RAG
 llm_retries: 2                           # transport-level retries for Ollama HTTP calls
+ollama_keep_alive: 5m                    # ask Ollama to keep the model loaded for this duration
+ollama_url: http://localhost:11434/api/generate  # Ollama API endpoint; override per-section if needed
+http_timeout: 240                        # HTTP timeout (seconds) for LLM requests
 
 ## Quiz generation parameters
 prepare:
@@ -67,6 +70,13 @@ prepare:
   # Transport-level retries for provider calls; overrides base-level llm_retries when set
   # llm_retries:
 
+  # Ollama keep-alive duration (overrides base-level ollama_keep_alive when set)
+  # ollama_keep_alive:
+
+  # Network overrides (optional)
+  # ollama_url:
+  # http_timeout:
+
   # Maximum number of retries when parsing LLM output fails
   max_retries: 3
 
@@ -97,3 +107,10 @@ chat:
   dump_ollama_prompt: #chat_prompt.txt
   # Transport-level retries for the provider; overrides base-level llm_retries when set
   # llm_retries:
+
+  # Ollama keep-alive duration (overrides base-level ollama_keep_alive when set)
+  # ollama_keep_alive:
+
+  # Network overrides (optional)
+  # ollama_url:
+  # http_timeout:

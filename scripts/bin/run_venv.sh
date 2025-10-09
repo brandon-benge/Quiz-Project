@@ -22,7 +22,7 @@ python -m pip install --upgrade pip >/dev/null
 
 if [[ -f "$REQS_FILE" ]]; then
   echo "[deps] Syncing requirements.txt"
-  pip install -r "$REQS_FILE"
+  pip install -r "$REQS_FILE" >/dev/null
 fi
 
 if [[ $# -eq 0 ]]; then

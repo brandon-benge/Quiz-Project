@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import sqlite3
 from pathlib import Path
+import random
 from typing import Dict, List, Optional, Tuple
 
 # Support running as a module or as a script
@@ -48,22 +49,37 @@ class RAG:
             log("warn", f"RAG init error: {e}; continuing without RAG.")
 
     def _fetch_unique_tags(self, db_path: str) -> List[str]:
-        """Read unique tag values from Chroma's SQLite metadata table (best-effort)."""
+        """Read unique theme values from Chroma's SQLite metadata (STRICT: tags_% only).
+
+        Notes:
+        - If any string_value appears to be a JSON array or CSV, explode into individual tokens.
+        - Preserve original case to allow strict equality filtering in retrieval.
+        """
         try:
             conn = sqlite3.connect(db_path)
             cur = conn.cursor()
-            cur.execute("SELECT string_value FROM embedding_metadata WHERE key='tags';")
+            # Use DISTINCT values for all denormalized tag columns (tags_0, tags_1, ...), excluding tags_json
+            # Order deterministically so retries can index into this list by attempt number.
+            cur.execute("SELECT DISTINCT string_value FROM embedding_metadata WHERE key LIKE 'tags_%' AND key != 'tags_json' ORDER BY string_value ASC;")
             rows = cur.fetchall()
+            # Randomize the order to ensure variety across runs
+            random.shuffle(rows)
             conn.close()
-            uniq: set[str] = set()
+            ordered: List[str] = []
+            seen: set[str] = set()
             for (val,) in rows:
-                if not val:
+                s = (str(val) if val is not None else '').strip()
+                if not s or s in seen:
                     continue
-                for tok in str(val).split(','):
-                    t = tok.strip().lower()
-                    if t:
-                        uniq.add(t)
-            return sorted(uniq)
+                seen.add(s)
+                ordered.append(s)
+            # Truncate to initial attempt + max_retries so index == attempt works (0..max_retries)
+            try:
+                max_retries = int(getattr(self.cfg, 'max_retries', 0) or 0)
+            except Exception:
+                max_retries = 0
+            desired = max(1, max_retries + 1)
+            return ordered[:desired]
         except Exception as e:
             log("warn", f"Could not fetch tags: {e}")
             return []
@@ -72,36 +88,26 @@ class RAG:
         """Retrieve top-k document snippets for a tag and build a contextual file for prompting."""
         if not self._document_store:
             return None
-        q = tag.strip().lower()
+        q = tag.strip()
         if not q:
             return None
         try:
             query_embedding = self._embedding.run(text=q)["embedding"]
-            docs = []
-            try:
-                docs = self._retriever.run(
-                    query_embedding=query_embedding,
-                    top_k=k,
-                    filters={"field": "tags", "operator": "==", "value": q}
-                )["documents"]
-            except Exception:
-                docs = []
-            if not docs:
-                docs = self._retriever.run(
-                    query_embedding=query_embedding,
-                    top_k=k
-                )["documents"]
+            # STRICT: only return docs tagged exactly with this theme under tags_% metadata keys
+            or_filters = {
+                "operator": "OR",
+                "conditions": [
+                    {"field": f"meta.tags_{i}", "operator": "==", "value": q} for i in range(64)
+                ]
+            }
+            docs = self._retriever.run(
+                query_embedding=query_embedding,
+                top_k=k,
+                filters=or_filters
+            )["documents"]
         except Exception as e:
             log("warn", f"Per-question retrieval by tag failed: {e}")
-            docs = []
-        kept = []
-        for d in docs:
-            md = getattr(d, 'meta', {}) or {}
-            tline = (md.get('tags') or '').lower()
-            tag_list = [t.strip() for t in tline.split(',') if t.strip()]
-            if q in tag_list or any((q == t or q in t) for t in tag_list):
-                kept.append(d)
-        docs = kept or docs
+            return None
         if not docs:
             return None
         seen, blocks = set(), []
@@ -147,7 +153,8 @@ class RAG:
                     query_embedding=emb,
                     top_k=k
                 )["documents"]
-            except Exception:
+            except Exception as e:
+                log("debug", f"Query retrieval failed: {type(e).__name__}: {e}")
                 docs = []
         except Exception as e:
             log("warn", f"Free-text retrieval failed: {e}")
@@ -194,8 +201,8 @@ class RAG:
         db_path = os.path.join(self.cfg.rag_persist, 'chroma.sqlite3')
         all_tags = self._fetch_unique_tags(db_path)
         if self.cfg.include_tags:
-            req = [t.strip().lower() for t in self.cfg.include_tags]
-            tag_pool = [t for t in all_tags if t in req]
+            req_lower = {t.strip().lower() for t in self.cfg.include_tags}
+            tag_pool = [t for t in all_tags if t.strip().lower() in req_lower]
         else:
             tag_pool = list(all_tags)
         if not tag_pool:
