@@ -3,7 +3,8 @@
 from __future__ import annotations
 import argparse, json
 from pathlib import Path
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Tuple
+import re
 
 def parse_args(argv: List[str]):
     p = argparse.ArgumentParser(description="Validate quiz answers")
@@ -80,14 +81,47 @@ def interactive_collect(quiz: List[Dict[str, Any]]) -> Dict[str, str]:
 def score(quiz: List[Dict[str, Any]], key: Dict[str, Any], user_answers: Dict[str, str], show_correct_first: bool, raw_mode: str, raw_truncate: int) -> None:
     total = len(quiz); correct = 0
     print("\n===== Results =====\n")
+    def infer_correct_letter(options: List[str], explanation: str, current_letter: str) -> Tuple[str, bool]:
+        # Normalize options by removing leading labels like "A) ", "B.", etc.
+        def _clean_opt(s: str) -> str:
+            s2 = re.sub(r"^\s*[A-D][\)\.:\-]\s*", "", s.strip(), flags=re.IGNORECASE)
+            return s2.strip().lower()
+        cleaned_opts = [_clean_opt(o) for o in options]
+        quoted = re.findall(r"[\"']([^\"']{3,})[\"']", explanation or "")
+        exact_matches: List[int] = []
+        fuzzy_matches: List[int] = []
+        for qtxt in quoted:
+            qnorm = qtxt.strip().lower()
+            for i, opt_norm in enumerate(cleaned_opts):
+                if qnorm == opt_norm:
+                    if i not in exact_matches:
+                        exact_matches.append(i)
+                elif qnorm in opt_norm or opt_norm in qnorm:
+                    if i not in fuzzy_matches:
+                        fuzzy_matches.append(i)
+        chosen: List[int] = exact_matches if len(exact_matches) == 1 else []
+        if not chosen and len(exact_matches) == 0 and len(fuzzy_matches) == 1:
+            chosen = fuzzy_matches
+        if len(chosen) == 1:
+            corrected_letter = chr(ord('A') + chosen[0])
+            if corrected_letter != current_letter:
+                return corrected_letter, True
+        return current_letter, False
     for q in quiz:
         qid = q['id']; user_ans = user_answers.get(qid); key_entry = key.get(qid)
         if not key_entry: print(f"[warn] Missing answer key for {qid}"); continue
-        correct_ans = key_entry['answer']; is_correct = user_ans == correct_ans
+        correct_ans = key_entry['answer']
+        # Try to auto-correct mismatched letters using explanation quotes
+        explanation = key_entry.get('explanation','').strip()
+        options = q.get('options', [])
+        if isinstance(options, list) and len(options) == 4:
+            corrected, changed = infer_correct_letter(options, explanation, correct_ans)
+            if changed:
+                correct_ans = corrected
+        is_correct = user_ans == correct_ans
         if is_correct: correct += 1
         header = f"{'✅' if is_correct else '❌'} {qid}  Your: {user_ans or '-'}  Correct: {correct_ans}"
         print(header)
-        explanation = key_entry.get('explanation','').strip()
         if explanation:
             if show_correct_first:
                 print(f"   Explanation: {explanation}")

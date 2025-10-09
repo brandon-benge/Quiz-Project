@@ -177,6 +177,44 @@ def _parse_model_questions(raw_json: str, provider: str):
             topic = (obj.get('topic') or 'General').strip() or 'General'
             difficulty = (obj.get('difficulty') or 'medium').strip() or 'medium'
             explanation = (obj.get('explanation') or '').strip()
+
+            # Sanity check: if the explanation quotes an option text that doesn't
+            # align with the provided answer letter, correct the letter to match
+            # the quoted option. This fixes cases where the model says e.g.,
+            # "Option C, 'Review technical due diligence'" while the listed
+            # options clearly map that text to a different letter.
+            try:
+                if explanation and options:
+                    # Normalize option texts by removing any leading "A) ", "B.", etc.
+                    def _clean_opt(s: str) -> str:
+                        s2 = re.sub(r"^\s*[A-D][\)\.:\-]\s*", "", s.strip(), flags=re.IGNORECASE)
+                        return s2.strip().lower()
+                    cleaned_opts = [_clean_opt(o) for o in options]
+                    # Extract quoted phrases from explanation
+                    quoted = re.findall(r"[\"']([^\"']{3,})[\"']", explanation)
+                    exact_matches: List[int] = []
+                    fuzzy_matches: List[int] = []
+                    for qtxt in quoted:
+                        qnorm = qtxt.strip().lower()
+                        for i, opt_norm in enumerate(cleaned_opts):
+                            if qnorm == opt_norm:
+                                if i not in exact_matches:
+                                    exact_matches.append(i)
+                            elif qnorm in opt_norm or opt_norm in qnorm:
+                                if i not in fuzzy_matches:
+                                    fuzzy_matches.append(i)
+                    chosen: List[int] = exact_matches if len(exact_matches) == 1 else []
+                    if not chosen and len(exact_matches) == 0 and len(fuzzy_matches) == 1:
+                        chosen = fuzzy_matches
+                    if len(chosen) == 1:
+                        corrected_idx = chosen[0]
+                        corrected_letter = chr(ord('A') + corrected_idx)
+                        if corrected_letter != answer_letter:
+                            log("warn", f"Answer letter/explanation mismatch for {qid}: got {answer_letter}, inferred {corrected_letter} from explanation; correcting.")
+                            answer_letter = corrected_letter
+            except Exception:
+                # Non-fatal; keep original letter if any parsing above fails
+                pass
             out.append(Question(
                 id=qid,
                 question=question,

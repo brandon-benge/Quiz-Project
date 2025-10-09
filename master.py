@@ -16,6 +16,7 @@ ROOT = Path(__file__).parent
 QUIZ_DIR = ROOT / 'scripts' / 'quiz'
 BIN = ROOT / 'scripts' / 'bin' / 'run_venv.sh'
 PARAMS = ROOT / 'params.yaml'
+_DISABLED = object()
 
 
 def load_params(p: Path) -> dict:
@@ -75,8 +76,61 @@ def _is_true(v: object, default: bool = False) -> bool:
     return bool(v)
 
 
+_DUMP_KEYS = {"dump_llm_payload", "dump_llm_response", "dump_ollama_prompt", "dump_rag_context"}
+
+
+def _norm_none(key: str, v: object) -> object:
+    """Normalize string sentinels like 'none'/'null' to None.
+
+    Keeps other values as-is. Empty strings also treated as None.
+    For dump/path toggles, the explicit string 'none' means DISABLED (no fallback).
+    """
+    if v is None:
+        return None
+    if isinstance(v, str):
+        s = v.strip().lower()
+        if s in {"null", ""}:
+            return None
+        if s == "none" and key in _DUMP_KEYS:
+            # Special sentinel to indicate explicit disable
+            return _DISABLED
+    return v
+
+
+def _fallback(section: dict, root: dict, key: str, default: object | None = None) -> object | None:
+    """Return section[key] if set (and not 'none'), else root[key], else default.
+
+    For file-path toggles like dump_llm_payload, a value of 'none' disables it.
+    """
+    try:
+        sv = _norm_none(key, section.get(key)) if isinstance(section, dict) else None
+    except Exception:
+        sv = None
+    # If explicitly disabled, return None without falling back
+    if sv is _DISABLED:
+        return None
+    if sv is not None:
+        return sv
+    try:
+        rv = _norm_none(key, root.get(key)) if isinstance(root, dict) else None
+    except Exception:
+        rv = None
+    if rv is not None:
+        return rv
+    return default
+
+
+
 def run_prepare(cfg: dict) -> int:
     args = cfg.get('prepare', {})
+    # Shared defaults fallback from root-level keys
+    rag_k = _fallback(args, cfg, 'rag_k', 5)
+    llm_retries = _fallback(args, cfg, 'llm_retries', 2)
+    rag_embed_model = _fallback(args, cfg, 'rag_embed_model')
+    dump_payload = _fallback(args, cfg, 'dump_llm_payload')
+    dump_response = _fallback(args, cfg, 'dump_llm_response')
+    model = _fallback(args, cfg, 'model', 'mistral')
+    rag_persist = _fallback(args, cfg, 'rag_persist', '../.chroma')
     out = [
         str(BIN),
         str(QUIZ_DIR / 'generate_quiz.py'),
@@ -84,15 +138,15 @@ def run_prepare(cfg: dict) -> int:
         '--quiz', str(args.get('quiz', 'quiz.json')),
         '--answers', str(args.get('answers', 'answer_key.json')),
         '--avoid-recent-window', str(args.get('avoid_recent_window', 5)),
-        '--rag-persist', str(args.get('rag_persist', '../.chroma')),
-        '--rag-k', str(args.get('rag_k', 5)),
+        '--rag-persist', str(rag_persist),
+        '--rag-k', str(rag_k),
         '--max-retries', str(args.get('max_retries', 2)),
-        '--llm-retries', str(args.get('llm_retries', 2)),
+        '--llm-retries', str(llm_retries),
     ]
-    if args.get('rag_embed_model'):
-        out += ['--rag-embed-model', str(args.get('rag_embed_model'))]
+    if rag_embed_model:
+        out += ['--rag-embed-model', str(rag_embed_model)]
     # Provider fixed to Ollama; no standalone --ollama flag
-    out += ['--ollama-model', str(args.get('model', 'mistral'))]
+    out += ['--ollama-model', str(model)]
 
     if _is_true(args.get('verify', False)):
         out += ['--verify']
@@ -101,10 +155,8 @@ def run_prepare(cfg: dict) -> int:
     out += ['--rag-local']
 
     # Optional dump settings
-    dump_payload = args.get('dump_llm_payload')
     if dump_payload:
         out += ['--dump-llm-payload', str(dump_payload)]
-    dump_response = args.get('dump_llm_response')
     if dump_response:
         out += ['--dump-llm-response', str(dump_response)]
     dump_prompt = args.get('dump_ollama_prompt')
@@ -133,6 +185,38 @@ def run_validate(cfg: dict) -> int:
     return exec_cmd(out)
 
 
+def run_chat(cfg: dict) -> int:
+    args = cfg.get('chat', {})
+    # Shared defaults fallback from root-level keys
+    rag_k = _fallback(args, cfg, 'rag_k', 5)
+    rag_embed_model = _fallback(args, cfg, 'rag_embed_model', 'BAAI/bge-base-en-v1.5')
+    llm_retries = _fallback(args, cfg, 'llm_retries', 2)
+    dump_payload = _fallback(args, cfg, 'dump_llm_payload')
+    dump_response = _fallback(args, cfg, 'dump_llm_response')
+    model = _fallback(args, cfg, 'model', 'mistral')
+    rag_persist = _fallback(args, cfg, 'rag_persist', '../.chroma/baai-bge-base-en-v1-5')
+    out = [
+        str(BIN), str(QUIZ_DIR / 'chat.py'),
+        '--window', str(args.get('window', 6)),
+        '--model', str(model),
+        '--temperature', str(args.get('temperature', 0.2)),
+        '--rag-persist', str(rag_persist),
+        '--rag-k', str(rag_k),
+        '--rag-embed-model', str(rag_embed_model),
+        '--llm-retries', str(llm_retries),
+    ]
+    if _is_true(args.get('no_rag', False)):
+        out += ['--no-rag']
+    if dump_payload:
+        out += ['--dump-llm-payload', str(dump_payload)]
+    if dump_response:
+        out += ['--dump-llm-response', str(dump_response)]
+    dump_prompt = args.get('dump_ollama_prompt')
+    if dump_prompt:
+        out += ['--dump-ollama-prompt', str(dump_prompt)]
+    return exec_cmd(out)
+
+
 def exec_cmd(cmd: list[str]) -> int:
     import subprocess
     print('[run]', ' '.join(cmd))
@@ -146,7 +230,7 @@ def exec_cmd(cmd: list[str]) -> int:
 
 def main(argv: list[str]) -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument('target', choices=['prepare','validate'])
+    ap.add_argument('target', choices=['prepare','validate','chat'])
     a = ap.parse_args(argv)
     cfg = load_params(PARAMS)
 
@@ -154,6 +238,8 @@ def main(argv: list[str]) -> int:
         return run_prepare(cfg)
     if a.target == 'validate':
         return run_validate(cfg)
+    if a.target == 'chat':
+        return run_chat(cfg)
     return 0
 
 if __name__ == '__main__':

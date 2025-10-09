@@ -127,6 +127,63 @@ class RAG:
             header = ""
         return {'RAG_CONTEXT.md': header + "\n\n---\n\n" + "\n\n".join(blocks)}
 
+    def get_blocks_for_query(self, query: str, k: int, *, debug: bool = False):
+        """Retrieve top-k snippets for a free-text query; optionally return debug info (embedding, docs).
+
+        Returns:
+          - If debug is False: Optional[Dict[str, str]] with a single 'RAG_CONTEXT.md' entry, or None
+          - If debug is True: Optional[Tuple[Dict[str, str], Dict[str, object]]], or None
+        """
+        if not self._document_store:
+            return None
+        q = (query or '').strip()
+        if not q:
+            return None
+        emb = None
+        try:
+            emb = self._embedding.run(text=q)["embedding"]
+            try:
+                docs = self._retriever.run(
+                    query_embedding=emb,
+                    top_k=k
+                )["documents"]
+            except Exception:
+                docs = []
+        except Exception as e:
+            log("warn", f"Free-text retrieval failed: {e}")
+            return None
+        if not docs:
+            return None
+        seen, blocks = set(), []
+        dbg_docs = []
+        for d in docs:
+            snippet = d.content[:1000].strip()
+            if snippet in seen:
+                continue
+            seen.add(snippet)
+            heading = d.meta.get('section_heading') or (snippet.split('\n',1)[0][:80])
+            source  = (d.meta.get('source') or d.meta.get('rel_path') or d.meta.get('path') or 'unknown')
+            blocks.append(f"[C1] (source: {source}, heading: {heading})\n{snippet}")
+            if debug:
+                score = getattr(d, 'score', None)
+                dbg_docs.append({'source': source, 'heading': heading, 'score': score, 'snippet': snippet})
+        if not blocks:
+            return None
+        try:
+            tpl_path = Path(__file__).parent / 'templates' / 'rag_context_header.tmpl'
+            tpl_text = tpl_path.read_text(encoding='utf-8')
+            from string import Template
+            header = Template(tpl_text).safe_substitute({'tag': q})
+        except Exception as e:
+            log("warn", f"Could not render RAG header template; omitting header. Error: {e}")
+            header = ""
+        files = {'RAG_CONTEXT.md': header + "\n\n---\n\n" + "\n\n".join(blocks)}
+        if debug:
+            debug_info = {'query': q, 'embedding': emb, 'documents': dbg_docs}
+            return files, debug_info
+        return files
+
+
     def build_context(self, files: Dict[str, str], *, k: int, count: int) -> Tuple[Dict[str, str], List[str]]:
         """Build per-run retrieval context and a list of candidate query tags for questions."""
         if self.cfg.no_rag:

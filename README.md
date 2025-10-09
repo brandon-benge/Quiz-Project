@@ -6,39 +6,35 @@ Standalone quiz generator that uses a pre-built Chroma vector store from the sib
 - A built vector store at ../.chroma (produced by RAG-Workflow/scripts/rag/vector_store_build.py)
 - Ollama for local LLMs (the project is Ollama-only)
 
-## Quick start
+## Quick start (Quiz)
 
-1) Create venv and install deps
+Generate a quiz and test your skills. 
 
-./scripts/bin/run_venv.sh
+```sh
+./scripts/bin/run_venv.sh ./master.py prepare
+```
 
-2) Generate a quiz (uses ../.chroma by default)
+Validate against answer key.
+```sh
+./scripts/bin/run_venv.sh ./master.py validate
+```
 
-./master.py prepare
+## Quick start (Chat)
 
-3) Validate against answer key (interactive path available)
+Start an interactive chat that keeps a sliding window of the last N Q/A pairs in memory, augments each turn with vector-store context (RAG), and answers using an Ollama model.
 
-./master.py validate
+```sh
+./scripts/bin/run_venv.sh ./master.py chat
+```
+
 
 ## Config
-Edit params.yaml to change model, counts, and retrieval settings. The rag_persist path defaults to ../.chroma to reference the vector store in the parent project; change it if you copy this elsewhere.
+Use these project files:
 
-LLM calls are centralized in scripts/quiz/llm_client.py (Ollama-only). To inspect prompts, payloads, or raw responses, use these flags in params.yaml or on the CLI:
-- dump_ollama_prompt: path to write the full prompt
-- dump_llm_payload: path to append JSON request payloads
-- dump_llm_response: path to append raw provider responses
-
-Retries:
-- Transport-level retries for the provider call are controlled by prepare.llm_retries (applies to Ollama POSTs).
-- Parsing-level retries for LLM output are controlled by prepare.max_retries; on each retry, the theme varies slightly to diversify outputs.
-
-Prompt templates:
-- Templates are used by default and live in scripts/quiz/templates/ (Ollama: ollama_prompt.tmpl).
-- Templates use Python's string.Template variables. Available variables include: token, iteration, count, model, theme, recent_clause, corpus, style_clause, and retry_nonce on retries.
-
-Embeddings and Chroma store:
-- RAG embeddings are local-only via SentenceTransformers. If your existing ../.chroma store was built with a 768-dim model (common for sentence-transformers/all-mpnet-base-v2), ensure the embedder matches to avoid dimension errors. The default embed model is sentence-transformers/all-mpnet-base-v2.
-- You can override via params.yaml under prepare.rag_embed_model or on the CLI with --rag-embed-model.
+- params.yaml: the single source of truth for all configuration. Inline comments document every setting and override rule.
+- scripts/bin/run_venv.sh: helper to run commands inside the project’s virtual environment.
+- master.py: entry point to run workflows: prepare, validate, chat.
+- requirements.txt: Python dependencies used by the project.
 
 ---
 

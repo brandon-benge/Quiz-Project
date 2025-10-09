@@ -1,3 +1,21 @@
+## Shared defaults across workflows
+# These base-level keys are used by multiple workflows (prepare, chat) unless the
+# workflow section provides its own value. This keeps things DRY.
+#
+# Override rules:
+# - Section value (e.g., prepare.model) overrides the base-level value.
+# - For dump file toggles (dump_llm_payload, dump_llm_response, dump_ollama_prompt,
+#   dump_rag_context): setting the section value to the literal string 'none'
+#   explicitly DISABLES that dump and prevents fallback to the base-level value.
+# - Setting a key to null or leaving it empty means "no value" (normal fallback applies).
+model: mistral                       # default Ollama model name
+rag_persist: ../.chroma/baai-bge-base-en-v1-5  # default vector store path
+dump_llm_payload: llm_payload.json       # default payload dump path (newline JSON); set 'none' in a section to disable
+dump_llm_response: llm_response.json     # default response dump path (newline JSON); set 'none' in a section to disable
+rag_embed_model: BAAI/bge-base-en-v1.5   # embedding model id (MUST match store dimension)
+rag_k: 5                                 # number of retrieved chunks for RAG
+llm_retries: 2                           # transport-level retries for Ollama HTTP calls
+
 ## Quiz generation parameters
 prepare:
   # LLM provider (generation is Ollama-only)
@@ -15,9 +33,10 @@ prepare:
   answers: answer_key.json
 
   # Path to the Chroma vector store (persist directory). Relative or absolute is fine.
+  # Overrides base-level rag_persist when set.
   rag_persist: ../.chroma/baai-bge-base-en-v1-5
 
-  # Top-K documents to retrieve for context per query/topic
+  # Top-K documents to retrieve for context per query/topic; overrides base-level rag_k when set.
   rag_k: 5
 
   # Embedding model used (MUST match the store's embedding dimension)
@@ -25,6 +44,7 @@ prepare:
   #   - sentence-transformers/all-MiniLM-L6-v2   # 384-dim
   #   - sentence-transformers/all-mpnet-base-v2  # 768-dim
   #   - BAAI/bge-base-en-v1.5                    # 768-dim
+  # Embedding model; overrides base-level rag_embed_model when set.
   rag_embed_model: BAAI/bge-base-en-v1.5
 
   # Avoid reusing the last N generated question phrasings
@@ -36,17 +56,16 @@ prepare:
   # Embedding backend selection for RAG (local only)
   rag_local: true
 
-  # Debug/dump options:
-  #   - Provide a file path to enable, or 'none' to disable
-  #   - dump_llm_payload: appends JSON request payloads. Example: llm_payload.json
-  #   - dump_llm_response: appends raw provider responses. Example: llm_response.json
-  dump_llm_payload: llm_payload.json
-  dump_llm_response: llm_response.json
+  # Debug/dump options (overrides base-level values if present):
+  #   - Provide a file path to enable
+  #   - Use the literal string 'none' to DISABLE and prevent fallback to base-level defaults
+  #   - dump_llm_payload: appends JSON request payloads
+  #   - dump_llm_response: appends raw provider responses
+  # dump_llm_payload:
+  # dump_llm_response:
 
-  # Transport-level retries for provider calls (applies to both OpenAI and Ollama)
-  # This controls how many times to retry the underlying API call if it fails
-  # due to network or HTTP/server errors. Does NOT affect JSON parsing retries.
-  llm_retries: 2
+  # Transport-level retries for provider calls; overrides base-level llm_retries when set
+  # llm_retries:
 
   # Maximum number of retries when parsing LLM output fails
   max_retries: 3
@@ -56,3 +75,25 @@ validate:
   # Input files for validation (should match the outputs above)
   quiz: quiz.json
   answers: answer_key.json
+
+## Interactive chat (sliding window + RAG)
+chat:
+  # Sliding window size (number of prior Q/A pairs to keep)
+  window: 6
+  # Ollama model to use for chat
+  model: mistral
+  # Decoding params
+  temperature: 0.2
+  # RAG settings (overrides base-level values when set)
+  rag_persist: ../.chroma/baai-bge-base-en-v1-5
+  # rag_k:
+  # rag_embed_model:
+  # Disable to skip retrieval
+  no_rag: false
+  # Dumps (optional): provide file paths to enable (overrides base-level values when set)
+  #   - Use 'none' to DISABLE and prevent fallback to base-level defaults
+  # dump_llm_payload:
+  # dump_llm_response:
+  dump_ollama_prompt: #chat_prompt.txt
+  # Transport-level retries for the provider; overrides base-level llm_retries when set
+  # llm_retries:
