@@ -150,14 +150,34 @@ def _parse_model_questions(raw_json: str, provider: str):
         else:
             raise RuntimeError(f'{provider}: expected a list of questions, got {type(data)}')
         out: List[Question] = []
+        # Normalizer: remove any leading option-label like "A)", "B.", "C:", "D -" (case-insensitive) and trim
+        def _clean_option_text(s: str) -> str:
+            try:
+                # Strip enclosing whitespace/newlines first
+                s0 = str(s).strip()
+                # Remove leading label patterns like "A)", "b.", "C :", "d -"
+                s1 = re.sub(r"^\s*[A-Da-d]\s*[\)\.:\-]\s*", "", s0)
+                # Collapse internal whitespace sequences to single spaces around edges
+                return s1.strip()
+            except Exception:
+                return str(s).strip()
         def format_options(options):
             # Accept either a list of strings, or a dict like {"A": "...", ...}
             if isinstance(options, list) and all(isinstance(opt, str) for opt in options):
-                return [opt.strip() for opt in options]
+                cleaned_list = []
+                for opt in options:
+                    cleaned = _clean_option_text(opt)
+                    # Fallback to original trim if cleaning results in empty
+                    cleaned_list.append(cleaned or str(opt).strip())
+                return cleaned_list
             if isinstance(options, dict):
                 ordered = [options.get(k) for k in ['A', 'B', 'C', 'D']]
                 if all(isinstance(v, str) and v.strip() for v in ordered):
-                    return [v.strip() for v in ordered]
+                    cleaned_ordered = []
+                    for v in ordered:
+                        cleaned = _clean_option_text(v)
+                        cleaned_ordered.append(cleaned or str(v).strip())
+                    return cleaned_ordered
             raise RuntimeError('Options must be a list of strings or a dict with A-D keys')
         for idx, obj in enumerate(items, start=1):
             if not isinstance(obj, dict):
@@ -185,10 +205,9 @@ def _parse_model_questions(raw_json: str, provider: str):
             # options clearly map that text to a different letter.
             try:
                 if explanation and options:
-                    # Normalize option texts by removing any leading "A) ", "B.", etc.
+                    # Normalize option texts by removing any leading labels
                     def _clean_opt(s: str) -> str:
-                        s2 = re.sub(r"^\s*[A-D][\)\.:\-]\s*", "", s.strip(), flags=re.IGNORECASE)
-                        return s2.strip().lower()
+                        return _clean_option_text(s).lower()
                     cleaned_opts = [_clean_opt(o) for o in options]
                     # Extract quoted phrases from explanation
                     quoted = re.findall(r"[\"']([^\"']{3,})[\"']", explanation)

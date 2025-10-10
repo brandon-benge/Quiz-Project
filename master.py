@@ -6,6 +6,7 @@ import json
 import sys
 from pathlib import Path
 import typing as _t
+import sqlite3
 
 try:
     import yaml  # type: ignore
@@ -138,8 +139,8 @@ def run_prepare(cfg: dict) -> int:
         str(BIN),
         str(QUIZ_DIR / 'generate_quiz.py'),
         '--count', str(args.get('count', 5)),
-        '--quiz', str(args.get('quiz', 'quiz.json')),
-        '--answers', str(args.get('answers', 'answer_key.json')),
+        '--quiz', str(_fallback(args, cfg, 'quiz', 'quiz.json')),
+        '--answers', str(_fallback(args, cfg, 'answers', 'answer_key.json')),
         '--avoid-recent-window', str(args.get('avoid_recent_window', 5)),
         '--rag-persist', str(rag_persist),
         '--rag-k', str(rag_k),
@@ -182,15 +183,68 @@ def run_prepare(cfg: dict) -> int:
 
 
 def run_validate(cfg: dict) -> int:
-    args = cfg.get('validate', {})
+    raw_args = cfg.get('validate')
+    args = raw_args if isinstance(raw_args, dict) else {}
+    sqlite_db = _fallback(args, cfg, 'sqlite_db', 'quiz.db')
+    ollama_url = _fallback(args, cfg, 'ollama_url')
+    http_timeout = _fallback(args, cfg, 'http_timeout')
+    model = _fallback(args, cfg, 'model', 'mistral')
+    llm_retries = _fallback(args, cfg, 'llm_retries', 2)
+    ollama_keep_alive = _fallback(args, cfg, 'ollama_keep_alive', '5m')
+    validated_out = _fallback(args, cfg, 'validated_quiz', 'validated_quiz.json')
+    rag_persist = _fallback(args, cfg, 'rag_persist', '../.chroma/baai-bge-base-en-v1-5')
+    rag_k = _fallback(args, cfg, 'rag_k', 5)
+    rag_embed_model = _fallback(args, cfg, 'rag_embed_model', 'BAAI/bge-base-en-v1.5')
+    no_rag = _fallback(args, cfg, 'no_rag', False)
+    dump_payload = _fallback(args, cfg, 'dump_llm_payload')
+    dump_response = _fallback(args, cfg, 'dump_llm_response')
+    dump_prompt = _fallback(args, cfg, 'dump_ollama_prompt')
     out = [
         str(BIN), str(QUIZ_DIR / 'validate_quiz_answers.py'),
-        '--quiz', str(args.get('quiz', 'quiz.json')),
-        '--answers', str(args.get('answers', 'answer_key.json')),
-        '--raw', 'summary',
-        '--show-correct-first'
+        '--quiz', str(_fallback(args, cfg, 'quiz', 'quiz.json')),
+        '--answers', str(_fallback(args, cfg, 'answers', 'answer_key.json')),
+        '--validated-out', str(validated_out),
     ]
-    return exec_cmd(out)
+    env = None
+    try:
+        import os as _os
+        env = dict(_os.environ)
+        # Ensure SQLite DB exists and has the required schema
+        if sqlite_db:
+            try:
+                _ensure_sqlite_db(Path(str(sqlite_db)))
+                env['SQLITE_DB'] = str(sqlite_db)
+            except Exception as _e:
+                print(f"[warn] Could not initialize SQLite DB at {sqlite_db}: {_e}")
+        if ollama_url:
+            env['OLLAMA_URL'] = str(ollama_url)
+        if http_timeout:
+            env['OLLAMA_HTTP_TIMEOUT'] = str(http_timeout)
+        if model:
+            env['OLLAMA_MODEL'] = str(model)
+        if llm_retries is not None:
+            env['LLM_RETRIES'] = str(llm_retries)
+        if ollama_keep_alive:
+            env['OLLAMA_KEEP_ALIVE'] = str(ollama_keep_alive)
+        if validated_out:
+            env['VALIDATED_QUIZ'] = str(validated_out)
+        if rag_persist:
+            env['RAG_PERSIST'] = str(rag_persist)
+        if rag_k is not None:
+            env['RAG_K'] = str(rag_k)
+        if rag_embed_model:
+            env['RAG_EMBED_MODEL'] = str(rag_embed_model)
+        if _is_true(no_rag, False):
+            env['NO_RAG'] = '1'
+        if dump_payload:
+            env['DUMP_LLM_PAYLOAD'] = str(dump_payload)
+        if dump_response:
+            env['DUMP_LLM_RESPONSE'] = str(dump_response)
+        if dump_prompt:
+            env['DUMP_OLLAMA_PROMPT'] = str(dump_prompt)
+    except Exception:
+        env = None
+    return exec_cmd(out, env=env)
 
 
 def run_chat(cfg: dict) -> int:
@@ -233,15 +287,40 @@ def run_chat(cfg: dict) -> int:
     return exec_cmd(out)
 
 
-def exec_cmd(cmd: list[str]) -> int:
+def exec_cmd(cmd: list[str], *, env: dict[str,str] | None = None) -> int:
     import subprocess
     print('[run]', ' '.join(cmd))
     try:
-        r = subprocess.run(cmd, check=False)
+        r = subprocess.run(cmd, check=False, env=env)
         return r.returncode
     except KeyboardInterrupt:
         print('\nInterrupted.')
         return 130
+
+
+def _ensure_sqlite_db(db_path: Path) -> None:
+    """Create the SQLite database and schema if they do not already exist.
+
+    Schema:
+      - test_questions(question TEXT, question_uuid TEXT PRIMARY KEY, explanation TEXT)
+      - test_answers(question_uuid TEXT, option TEXT, true_or_false INTEGER,
+                     FOREIGN KEY(question_uuid) REFERENCES test_questions(question_uuid))
+    """
+    try:
+        # Create parent directories if needed
+        if db_path.parent and not db_path.parent.exists():
+            db_path.parent.mkdir(parents=True, exist_ok=True)
+        with sqlite3.connect(str(db_path)) as conn:
+            # Enforce foreign keys
+            conn.execute("PRAGMA foreign_keys = ON;")
+            schema_path = ROOT / 'schema.sql'
+            if not schema_path.exists():
+                raise FileNotFoundError(f"schema.sql not found at {schema_path}")
+            sql = schema_path.read_text(encoding='utf-8')
+            conn.executescript(sql)
+            conn.commit()
+    except Exception as e:
+        raise
 
 
 def main(argv: list[str]) -> int:

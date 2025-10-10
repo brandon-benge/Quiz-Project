@@ -1,24 +1,40 @@
 #!/usr/bin/env python3
-"""Validate user answers against quiz & answer key (standalone copy)."""
+"""Auto-validate quiz answers using the LLM (no interactive input).
+
+For each question, we ask the LLM to determine whether the provided answer is correct,
+or if any other option is closer to correct, or if none of the options make sense.
+The LLM must respond strictly with True or False using the contract described in the prompt.
+
+If the LLM responds True (meaning the given answer is correct and reasonable, with no better option),
+the question is appended to an output file configured via params.yaml (global key: validated_quiz).
+"""
 from __future__ import annotations
-import argparse, json
+import argparse, json, os
 from pathlib import Path
 from typing import Dict, Any, List, Tuple
 import re
+import sqlite3
+import uuid
 
 def parse_args(argv: List[str]):
     p = argparse.ArgumentParser(description="Validate quiz answers")
     p.add_argument("--quiz", default="quiz.json")
     p.add_argument("--answers", default="answer_key.json")
-    p.add_argument("--user")
-    p.add_argument("--show-correct-first", action="store_true")
-    p.add_argument("--raw", choices=["none", "summary", "full"], default="none",
-                   help="How to display raw_response: none, summary, or full (default: none)")
-    p.add_argument("--raw-truncate", type=int, default=1200,
-                   help="Max characters to print for raw_output before truncating (default: 1200)")
+    p.add_argument("--validated-out", help="Output file for validated questions (overrides params.yaml validated_quiz)")
     return p.parse_args(argv)
 
 def load_json(path: Path): return json.loads(path.read_text(encoding="utf-8"))
+
+# Support running as a module or as a script for LLM client import
+try:  # pragma: no cover - import flexibility
+    from .llm_client import LLMClient, DumpOptions, OllamaGeneratePayload  # type: ignore
+    from .rag import RAG  # type: ignore
+except Exception:
+    import sys
+    from pathlib import Path as _P
+    sys.path.append(str(_P(__file__).parent))
+    from llm_client import LLMClient, DumpOptions, OllamaGeneratePayload  # type: ignore
+    from rag import RAG  # type: ignore
 
 def format_raw_response(raw: Any, mode: str, truncate: int) -> str:
     if mode == "none":
@@ -63,84 +79,206 @@ def format_raw_response(raw: Any, mode: str, truncate: int) -> str:
     s = _json.dumps(obj, indent=2, ensure_ascii=False)
     return (s[:truncate] + ("... [truncated]" if len(s) > truncate else ""))
 
-def interactive_collect(quiz: List[Dict[str, Any]]) -> Dict[str, str]:
-    answers: Dict[str, str] = {}
-    print("Enter your answers (A-D). Press Enter to skip (counts as incorrect).\n")
-    for q in quiz:
-        print(f"{q['id']}: {q['question']}")
-        for idx, opt in enumerate(q['options']):
-            letter = chr(ord('A') + idx)
-            print(f"  {letter}. {opt}")
-        while True:
-            val = input("Answer (A-D): ").strip().upper()
-            if val == "": print("(skipped)\n"); break
-            if val in ["A", "B", "C", "D"]: answers[q['id']] = val; print(); break
-            print("Please enter A-D or leave blank to skip.")
-    return answers
+def _build_validation_prompt(q: Dict[str, Any], key_entry: Dict[str, Any], rag_context: str = "") -> str:
+    question = q.get('question','').strip()
+    options = q.get('options', [])
+    provided = key_entry.get('answer','').strip().upper()
+    expl = key_entry.get('explanation','').strip()
+    opts_str = '\n'.join([f"{chr(ord('A')+i)}. {opt}" for i, opt in enumerate(options)])
+    # Resolve the provided answer text for clarity
+    ans_text = ''
+    try:
+        idx = ord(provided) - ord('A')
+        if 0 <= idx < len(options):
+            ans_text = str(options[idx])
+    except Exception:
+        ans_text = ''
+    prompt = (
+        "You are validating a multiple choice question.\n"
+        + "Return ONLY the JSON literal True or False. No other text.\n"
+        + "Respond True only if: (1) the provided answer text corresponds to the correct option,\n"
+        + "(2) the answer makes sense given the question, and (3) none of the other options are closer to correct.\n"
+        + "Respond False otherwise (including if another option is closer or none make sense).\n\n"
+        + (f"Context (from knowledge base):\n{rag_context}\n\n" if rag_context else "")
+        + f"Question: {question}\n"
+        + f"Options:\n{opts_str}\n"
+        + (f"Provided answer: {ans_text}\n" if ans_text else "Provided answer: \n")
+        + f"Model explanation (if any): {expl}\n"
+        + "Output:"
+    )
+    return prompt
 
-def score(quiz: List[Dict[str, Any]], key: Dict[str, Any], user_answers: Dict[str, str], show_correct_first: bool, raw_mode: str, raw_truncate: int) -> None:
-    total = len(quiz); correct = 0
-    print("\n===== Results =====\n")
-    def infer_correct_letter(options: List[str], explanation: str, current_letter: str) -> Tuple[str, bool]:
-        # Normalize options by removing leading labels like "A) ", "B.", etc.
-        def _clean_opt(s: str) -> str:
-            s2 = re.sub(r"^\s*[A-D][\)\.:\-]\s*", "", s.strip(), flags=re.IGNORECASE)
-            return s2.strip().lower()
-        cleaned_opts = [_clean_opt(o) for o in options]
-        quoted = re.findall(r"[\"']([^\"']{3,})[\"']", explanation or "")
-        exact_matches: List[int] = []
-        fuzzy_matches: List[int] = []
-        for qtxt in quoted:
-            qnorm = qtxt.strip().lower()
-            for i, opt_norm in enumerate(cleaned_opts):
-                if qnorm == opt_norm:
-                    if i not in exact_matches:
-                        exact_matches.append(i)
-                elif qnorm in opt_norm or opt_norm in qnorm:
-                    if i not in fuzzy_matches:
-                        fuzzy_matches.append(i)
-        chosen: List[int] = exact_matches if len(exact_matches) == 1 else []
-        if not chosen and len(exact_matches) == 0 and len(fuzzy_matches) == 1:
-            chosen = fuzzy_matches
-        if len(chosen) == 1:
-            corrected_letter = chr(ord('A') + chosen[0])
-            if corrected_letter != current_letter:
-                return corrected_letter, True
-        return current_letter, False
+def _ensure_db(conn: sqlite3.Connection) -> None:
+    # Enforce foreign keys and apply schema from schema.sql for readability
+    try:
+        conn.execute("PRAGMA foreign_keys = ON;")
+    except Exception:
+        pass
+    try:
+        # Try to locate schema.sql at repo root (2 dirs up from this file)
+        root = Path(__file__).resolve().parents[2]
+        schema_path = root / 'schema.sql'
+        if schema_path.exists():
+            sql = schema_path.read_text(encoding='utf-8')
+            conn.executescript(sql)
+            conn.commit()
+    except Exception as e:
+        print(f"[warn] Could not load schema.sql: {e}")
+
+def auto_validate(quiz: List[Dict[str, Any]], key: Dict[str, Any], *, out_path: Path) -> int:
+    # Build a minimal client with shared params from env (master.py passes them via CLI -> env)
+    # Pull config from environment or defaults
+    ollama_url = os.environ.get('OLLAMA_URL')
+    http_timeout = os.environ.get('OLLAMA_HTTP_TIMEOUT')
+    model = os.environ.get('OLLAMA_MODEL', 'mistral')
+    if not ollama_url or not http_timeout:
+        print("[error] OLLAMA_URL or OLLAMA_HTTP_TIMEOUT env not set; run via master.py")
+        return
+    dumps = DumpOptions(
+        dump_prompt_path=os.environ.get('DUMP_OLLAMA_PROMPT'),
+        dump_payload_path=os.environ.get('DUMP_LLM_PAYLOAD'),
+        dump_response_path=os.environ.get('DUMP_LLM_RESPONSE'),
+    )
+    client = LLMClient(dumps, base_url=ollama_url, http_timeout=int(http_timeout))
+    # RAG setup (question-only retrieval) is REQUIRED
+    rag = None
+    try:
+        cfg_like = type('Cfg', (), {})()
+        setattr(cfg_like, 'rag_persist', os.environ.get('RAG_PERSIST', '../.chroma/baai-bge-base-en-v1-5'))
+        setattr(cfg_like, 'rag_embed_model', os.environ.get('RAG_EMBED_MODEL', 'BAAI/bge-base-en-v1.5'))
+        setattr(cfg_like, 'rag_k', int(os.environ.get('RAG_K', '5')))
+        setattr(cfg_like, 'no_rag', False)
+        rag = RAG(cfg_like)  # type: ignore
+        # Initialize the RAG components once (document store, retriever, embedder)
+        rag._init()
+        if not getattr(rag, '_document_store', None):
+            print("[error] RAG document store is not available for validation; ensure rag_persist is correct and dependencies are installed.")
+            return 2
+    except Exception as e:
+        print(f"[error] RAG init for validation failed: {e}")
+        return 2
+    options = {}
+    valid: List[Dict[str, Any]] = []
+    # Optional DB target from env
+    db_path = os.environ.get('SQLITE_DB')
+    conn: sqlite3.Connection | None = None
+    if db_path:
+        try:
+            conn = sqlite3.connect(db_path)
+            _ensure_db(conn)
+        except Exception as e:
+            print(f"[warn] Could not open SQLite DB at {db_path}: {e}")
+            conn = None
     for q in quiz:
-        qid = q['id']; user_ans = user_answers.get(qid); key_entry = key.get(qid)
-        if not key_entry: print(f"[warn] Missing answer key for {qid}"); continue
-        correct_ans = key_entry['answer']
-        # Try to auto-correct mismatched letters using explanation quotes
-        explanation = key_entry.get('explanation','').strip()
-        options = q.get('options', [])
-        if isinstance(options, list) and len(options) == 4:
-            corrected, changed = infer_correct_letter(options, explanation, correct_ans)
-            if changed:
-                correct_ans = corrected
-        is_correct = user_ans == correct_ans
-        if is_correct: correct += 1
-        header = f"{'✅' if is_correct else '❌'} {qid}  Your: {user_ans or '-'}  Correct: {correct_ans}"
-        print(header)
-        if explanation:
-            if show_correct_first:
-                print(f"   Explanation: {explanation}")
+        qid = q.get('id')
+        key_entry = key.get(qid, {})
+        if not key_entry: continue
+        provided_letter = key_entry.get('answer','').strip().upper()
+        # Map letter to option text for storage and prompt
+        provided_text = ''
+        try:
+            idx = ord(provided_letter) - ord('A')
+            if 0 <= idx < len(q.get('options', [])):
+                provided_text = str(q['options'][idx])
+        except Exception:
+            provided_text = ''
+        # Build context by querying ONLY with the question text
+        context_text = ""
+        if rag and isinstance(q.get('question'), str):
+            try:
+                maybe = rag.get_blocks_for_query(q['question'], int(os.environ.get('RAG_K', '5')))
+                if isinstance(maybe, dict):
+                    context_text = maybe.get('RAG_CONTEXT.md', '')
+            except Exception as e:
+                print(f"[debug] RAG retrieval failed for {qid}: {e}")
+        prompt = _build_validation_prompt(q, key_entry, rag_context=context_text)
+        retries = int(os.environ.get('LLM_RETRIES', '1'))
+        keep_alive = os.environ.get('OLLAMA_KEEP_ALIVE')
+        payload = OllamaGeneratePayload(model=model, options=options, prompt=prompt, retries=retries, keep_alive=keep_alive)
+        try:
+            json_text, raw, _ = client.run_ollama(payload)
+            answer = json_text.strip()
+            # Normalize possible formats: true/false, True/False, quoted strings, or JSON literals
+            ans_norm = answer.strip()
+            if ans_norm.startswith('"') and ans_norm.endswith('"'):
+                ans_norm = ans_norm[1:-1].strip()
+            if ans_norm.startswith("'") and ans_norm.endswith("'"):
+                ans_norm = ans_norm[1:-1].strip()
+            low = ans_norm.lower()
+            if low in {"true", "false"}:
+                verdict = (low == "true")
             else:
-                print(f"   {explanation}")
-        raw_response = key_entry.get('raw_response', '')
-        raw_out = format_raw_response(raw_response, raw_mode, raw_truncate)
-        if raw_out:
-            print("   [Model Raw Response]:")
-            print(raw_out)
-    pct = (correct / total) * 100 if total else 0
-    print(f"\nScore: {correct}/{total} = {pct:.1f}%")
-    missed = [q for q in quiz if user_answers.get(q['id']) != key.get(q['id'], {}).get('answer')]
-    if missed:
-        print("\nMissed Questions:")
-        for q in missed:
-            aid = q['id']; correct_ans = key.get(aid, {}).get('answer', '-')
-            user_ans = user_answers.get(aid) or '-'
-            print(f"  - {aid}: Your {user_ans} → Correct {correct_ans}: {q['question'][:120]}")
+                # Last resort: try to parse JSON literal
+                try:
+                    import json as _json
+                    parsed = _json.loads(answer)
+                    verdict = bool(parsed) is True
+                except Exception:
+                    verdict = False
+            if verdict:
+                # Store the question with the answer TEXT and explanation
+                try:
+                    enriched = dict(q)
+                except Exception:
+                    enriched = q
+                if isinstance(enriched, dict):
+                    enriched['answer'] = provided_text
+                    if 'explanation' not in enriched or not enriched['explanation']:
+                        enriched['explanation'] = key_entry.get('explanation','')
+                valid.append(enriched)
+                # Insert into SQLite if available
+                if conn is not None:
+                    try:
+                        question_text = str(q.get('question',''))
+                        # Generate a random UUID for DB, independent of displayed question id
+                        question_uuid = str(uuid.uuid4())
+                        explanation_text = str(key_entry.get('explanation',''))
+                        options_list = q.get('options', []) or []
+                        # Determine correct option index
+                        correct_idx = -1
+                        try:
+                            idx = ord(provided_letter) - ord('A')
+                            if 0 <= idx < len(options_list):
+                                correct_idx = idx
+                        except Exception:
+                            correct_idx = -1
+                        cur = conn.cursor()
+                        # Insert parent row first (no delete/update)
+                        cur.execute(
+                            "INSERT INTO test_questions (question, question_uuid, explanation) VALUES (?, ?, ?)",
+                            (question_text, question_uuid, explanation_text),
+                        )
+                        # Insert child rows, relying on FK constraint
+                        for i, opt in enumerate(options_list):
+                            is_true = 1 if i == correct_idx else 0
+                            cur.execute(
+                                "INSERT INTO test_answers (question_uuid, option, true_or_false) VALUES (?, ?, ?)",
+                                (question_uuid, str(opt), is_true),
+                            )
+                        conn.commit()
+                    except Exception as e:
+                        print(f"[warn] SQLite insert failed for {qid}: {e}")
+        except Exception as e:
+            print(f"[warn] Validation call failed for {qid}: {e}")
+            continue
+    # Write validated questions list
+    try:
+        out_path.write_text(json.dumps(valid, indent=2, ensure_ascii=False), encoding='utf-8')
+        print(f"[ok] Wrote {len(valid)} validated questions -> {out_path}")
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+        return 0
+    except Exception as e:
+        print(f"[error] Could not write validated questions: {e}")
+        try:
+            if conn is not None:
+                conn.close()
+        except Exception:
+            pass
+        return 1
 
 def main(argv):
     args = parse_args(argv)
@@ -148,8 +286,10 @@ def main(argv):
     if not quiz_path.exists() or not ans_path.exists(): print("[error] quiz or answer key path does not exist"); return 1
     quiz = load_json(quiz_path); key = load_json(ans_path)
     if not isinstance(quiz, list) or not isinstance(key, dict): print("[error] Invalid JSON structure"); return 1
-    user_answers = load_json(Path(args.user)) if args.user else interactive_collect(quiz)
-    score(quiz, key, user_answers, args.show_correct_first, args.raw, args.raw_truncate); return 0
+    # Resolve output path: CLI overrides env; env should be set by master.py from params.yaml
+    out_name = args.validated_out or os.environ.get('VALIDATED_QUIZ', 'validated_quiz.json')
+    out_path = Path(out_name)
+    return auto_validate(quiz, key, out_path=out_path)
 
 if __name__ == "__main__":  # pragma: no cover
     import sys
