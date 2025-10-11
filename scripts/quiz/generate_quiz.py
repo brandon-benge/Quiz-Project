@@ -38,6 +38,18 @@ def main(argv: List[str]) -> int:
         if err:
             log("error", f"Validation failed: {err}")
             return 1
+        if cfg.emit_stdout:
+            # Emit a combined JSON object to stdout for piping into validate
+            try:
+                payload = {
+                    "quiz": [q.public_dict() for q in questions],
+                    "answer_key": {q.id: q.answer_dict() for q in questions},
+                }
+                print(json.dumps(payload, ensure_ascii=False))
+                return 0
+            except Exception as e:
+                log("error", f"Could not emit stdout payload: {e}")
+                return 1
         if cfg.dry_run:
             log("info", "Dry run complete.")
             return 0

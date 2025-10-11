@@ -33,7 +33,7 @@ prepare:
   model: mistral
 
   # Number of questions to generate
-  count: 5
+  count: 1
 
   # Output files for the generated quiz and the answer key
   # quiz / answers now configured at the global level

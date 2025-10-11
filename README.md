@@ -1,23 +1,24 @@
 # Quiz-Project
 
-Standalone quiz generator that uses a pre-built Chroma vector store from the sibling RAG-Workflow project.
+Standalone quiz generator that uses an in-memory prepare→validate pipeline with a pre-built Chroma vector store from the sibling RAG-Workflow project.
 
 ## Prereqs
-- A built vector store at ../.chroma (produced by RAG-Workflow/scripts/rag/vector_store_build.py)
+- A built vector store at ../.chroma and have an active Ollama instance(https://github.com/brandon-benge/RAG-Workflow)
 - Ollama for local LLMs (the project is Ollama-only)
+- Model information can be updated in the params.yaml file
 
-## Quick start (Quiz)
+## Primary workflow: Prepare → Validate (in-memory)
 
-Generate a quiz and test your skills. 
+Run quiz generation and validation end-to-end without writing intermediate files. The prepare step emits JSON to stdout; the master extracts it and pipes it into validate via stdin.
 
 ```sh
-./scripts/bin/run_venv.sh ./master.py prepare
+./scripts/bin/run_venv.sh ./master.py prepare-validate
 ```
 
-Auto-validate quiz answers using LLM with RAG context. This writes validated questions to both JSON and SQLite database (no user prompts required).
-```sh
-./scripts/bin/run_venv.sh ./master.py validate
-```
+What you get:
+- Validated questions written to `validated_quiz.json`
+- Rows inserted into SQLite (`schema.sql`), if `sqlite_db` is configured in `params.yaml`
+- Request/response dumps and timing logs if enabled in params
 
 ## Quick start (Chat)
 
@@ -32,6 +33,7 @@ Use these project files:
 
 - params.yaml: the single source of truth for all configuration. Inline comments document every setting and override rule.
 - schema.sql: SQLite database schema for storing validated quiz results.
+- scripts/quiz/templates/validate_prompt.tmpl: the required template used to build the validation prompt.
 - scripts/bin/run_venv.sh: helper to run commands inside the project's virtual environment.
 - master.py: entry point to run workflows: prepare, validate, chat.
 - requirements.txt: Python dependencies used by the project.
@@ -107,9 +109,8 @@ The validate workflow is fully automated and uses LLM-driven validation with RAG
 
 ```mermaid
 flowchart LR
-    subgraph Input["Input Files"]
-        QUIZ[quiz.json<br/>Generated Questions]
-        ANSWERS[answer_key.json<br/>Answer Explanations]
+    subgraph Input["In-Memory Input"]
+        PREPARE[prepare --emit-stdout<br/>Generated Questions + Answer Key]
     end
 
     subgraph Validation["LLM Validation Process"]
@@ -127,8 +128,7 @@ flowchart LR
         DB_OUT[SQLite Database<br/>Structured Storage]
     end
 
-    QUIZ --> LOAD
-    ANSWERS --> LOAD
+    PREPARE --> LOAD
     LOAD --> RAG_Q
     RAG_Q --> CONTEXT
     CONTEXT --> PROMPT
@@ -138,6 +138,29 @@ flowchart LR
     ENRICH --> JSON_OUT
     ENRICH --> DB_OUT
 ```
+
+## Customize the validation prompt
+
+The validator loads its instructions from a single required template:
+
+- Location: `scripts/quiz/templates/validate_prompt.tmpl` (no overrides)
+
+Template rendering order:
+
+1. Question
+2. Options (text-only, no labels)
+3. Provided answer text
+4. Model explanation (if any)
+5. Context (optional; sanitized to remove banner headers)
+6. Output directive ("Return ONLY the JSON literal True or False")
+
+Available placeholders:
+
+- `${context_section}`: optional RAG context block (blank if none), appended after the Q/A section
+- `${question}`: the question text
+- `${options}`: rendered list of options (text-only, no A./B./C./D. labels)
+- `${provided_answer_text}`: the provided answer text (exactly one of the options)
+- `${explanation}`: the model’s explanation captured during prepare
 
 ## Database Schema
 
@@ -157,41 +180,21 @@ SELECT * FROM test_questions LIMIT 5;
 
 ---or that uses a pre-built Chroma vector store from the sibling RAG-Workflow project.
 
-## Prereqs
-- A built vector store at ../.chroma (produced by RAG-Workflow/scripts/rag/vector_store_build.py)
-- Ollama for local LLMs (the project is Ollama-only)
+## Advanced: Run steps separately
 
-## Quick start (Quiz)
+You can still run the steps independently if you prefer to inspect intermediate JSON files.
 
-Generate a quiz and test your skills. 
+Generate a quiz and write files:
 
 ```sh
 ./scripts/bin/run_venv.sh ./master.py prepare
 ```
 
-Auto-validate quiz answers using LLM with RAG context. This writes validated questions to both JSON and SQLite database (no user prompts required).
+Validate from files (writes `validated_quiz.json` and inserts into SQLite if configured):
+
 ```sh
 ./scripts/bin/run_venv.sh ./master.py validate
 ```
-
-## Quick start (Chat)
-
-Start an interactive chat that keeps a sliding window of the last N Q/A pairs in memory, augments each turn with vector-store context (RAG), and answers using an Ollama model.
-
-```sh
-./scripts/bin/run_venv.sh ./master.py chat
-```
-
-
-## Config
-Use these project files:
-
-- params.yaml: the single source of truth for all configuration. Inline comments document every setting and override rule.
-- scripts/bin/run_venv.sh: helper to run commands inside the project’s virtual environment.
-- master.py: entry point to run workflows: prepare, validate, chat.
-- requirements.txt: Python dependencies used by the project.
-
----
 
 
 

@@ -186,61 +186,54 @@ def _parse_model_questions(raw_json: str, provider: str):
             question = (obj.get('question') or '').strip() or f'Placeholder question {idx}'
             raw_opts = obj.get('options')
             options = format_options(raw_opts)
-            explicit_letter = str(obj.get('answer_letter', '')).strip().upper()
-            answer_field = str(obj.get('answer', '')).strip().upper()
-            if explicit_letter in ['A', 'B', 'C', 'D']:
-                answer_letter = explicit_letter
-            elif answer_field in ['A', 'B', 'C', 'D']:
-                answer_letter = answer_field
-            else:
-                raise RuntimeError("answer or answer_letter must be one of A, B, C, D")
+            # Expect 'answer' to be the full correct option text; avoid letters.
+            # However, for robustness, if the model includes a leading label (e.g., "B. ...")
+            # or a single letter (e.g., "B"), normalize it to the option text and warn.
+            answer_raw = str(obj.get('answer', '')).strip()
+            if not answer_raw:
+                raise RuntimeError("answer must be the full correct option text")
+            answer_text = answer_raw
+            # Primary: exact text match (case-insensitive)
+            norm = answer_text.strip().lower()
+            match_idx = -1
+            for i, opt in enumerate(options):
+                if norm == str(opt).strip().lower():
+                    match_idx = i
+                    break
+            # Fallback 1: strip any leading label from the answer text and retry
+            if match_idx == -1:
+                cleaned_ans = _clean_option_text(answer_text)
+                if cleaned_ans and cleaned_ans.lower() != norm:
+                    c_norm = cleaned_ans.strip().lower()
+                    for i, opt in enumerate(options):
+                        if c_norm == str(opt).strip().lower():
+                            match_idx = i
+                            answer_text = str(opt)
+                            log("warn", f"{provider}: normalized answer text by stripping label for {qid}")
+                            break
+            # Fallback 2: map single-letter answers (A-D) to the indexed option
+            if match_idx == -1:
+                letter = answer_raw.strip()
+                if re.fullmatch(r"[A-Da-d]", letter) or re.fullmatch(r"[A-Da-d]\s*[\)\.:\-]?", letter):
+                    idx_letter = ord(letter.strip()[0].upper()) - ord('A')
+                    if 0 <= idx_letter < len(options):
+                        match_idx = idx_letter
+                        answer_text = str(options[idx_letter])
+                        log("warn", f"{provider}: mapped single-letter answer to option text for {qid}")
+            if match_idx == -1:
+                raise RuntimeError("answer text must exactly match one of the provided options")
             topic = (obj.get('topic') or 'General').strip() or 'General'
             difficulty = (obj.get('difficulty') or 'medium').strip() or 'medium'
             explanation = (obj.get('explanation') or '').strip()
 
-            # Sanity check: if the explanation quotes an option text that doesn't
-            # align with the provided answer letter, correct the letter to match
-            # the quoted option. This fixes cases where the model says e.g.,
-            # "Option C, 'Review technical due diligence'" while the listed
-            # options clearly map that text to a different letter.
-            try:
-                if explanation and options:
-                    # Normalize option texts by removing any leading labels
-                    def _clean_opt(s: str) -> str:
-                        return _clean_option_text(s).lower()
-                    cleaned_opts = [_clean_opt(o) for o in options]
-                    # Extract quoted phrases from explanation
-                    quoted = re.findall(r"[\"']([^\"']{3,})[\"']", explanation)
-                    exact_matches: List[int] = []
-                    fuzzy_matches: List[int] = []
-                    for qtxt in quoted:
-                        qnorm = qtxt.strip().lower()
-                        for i, opt_norm in enumerate(cleaned_opts):
-                            if qnorm == opt_norm:
-                                if i not in exact_matches:
-                                    exact_matches.append(i)
-                            elif qnorm in opt_norm or opt_norm in qnorm:
-                                if i not in fuzzy_matches:
-                                    fuzzy_matches.append(i)
-                    chosen: List[int] = exact_matches if len(exact_matches) == 1 else []
-                    if not chosen and len(exact_matches) == 0 and len(fuzzy_matches) == 1:
-                        chosen = fuzzy_matches
-                    if len(chosen) == 1:
-                        corrected_idx = chosen[0]
-                        corrected_letter = chr(ord('A') + corrected_idx)
-                        if corrected_letter != answer_letter:
-                            log("warn", f"Answer letter/explanation mismatch for {qid}: got {answer_letter}, inferred {corrected_letter} from explanation; correcting.")
-                            answer_letter = corrected_letter
-            except Exception:
-                # Non-fatal; keep original letter if any parsing above fails
-                pass
+            # Optional: reconcile explanation with answer text is not required now
             out.append(Question(
                 id=qid,
                 question=question,
                 options=options,
                 topic=topic,
                 difficulty=difficulty,
-                answer=answer_letter,
+                answer=answer_text,
                 explanation=explanation
             ))
         if not out:

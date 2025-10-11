@@ -11,6 +11,7 @@ class Config:
     count: int
     quiz: Path
     answers: Path
+    emit_stdout: bool
     no_random_component: bool
     model: str
     ollama_model: str
@@ -54,6 +55,7 @@ def parse_args(argv: List[str]) -> Config:
     p.add_argument('--count', type=int, default=5)
     p.add_argument('--quiz', default='quiz.json')
     p.add_argument('--answers', default='answer_key.json')
+    p.add_argument('--emit-stdout', action='store_true', help='Emit combined quiz+answer JSON to stdout (no files)')
     p.add_argument('--no-random-component', action='store_true')
     p.add_argument('--model', default='mistral')
     p.add_argument('--ollama-model', default='mistral')
@@ -95,6 +97,7 @@ def parse_args(argv: List[str]) -> Config:
         count=a.count,
         quiz=Path(a.quiz),
         answers=Path(a.answers),
+        emit_stdout=a.emit_stdout,
         no_random_component=a.no_random_component,
         model=a.model,
         ollama_model=a.ollama_model,

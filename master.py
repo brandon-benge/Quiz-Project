@@ -325,7 +325,7 @@ def _ensure_sqlite_db(db_path: Path) -> None:
 
 def main(argv: list[str]) -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument('target', choices=['prepare','validate','chat'])
+    ap.add_argument('target', choices=['prepare','validate','chat','prepare-validate'])
     a = ap.parse_args(argv)
     cfg = load_params(PARAMS)
 
@@ -335,6 +335,132 @@ def main(argv: list[str]) -> int:
         return run_validate(cfg)
     if a.target == 'chat':
         return run_chat(cfg)
+    if a.target == 'prepare-validate':
+        # Run prepare in emit-stdout mode and pipe to validate with --stdin
+        import subprocess, os as _os
+        print('[info] Running prepare→validate in-memory. This can take a while depending on question count and model speed...')
+        # Build prepare command using existing function but override to include --emit-stdout
+        args = cfg.get('prepare', {})
+        rag_k = _fallback(args, cfg, 'rag_k', 5)
+        llm_retries = _fallback(args, cfg, 'llm_retries', 2)
+        rag_embed_model = _fallback(args, cfg, 'rag_embed_model')
+        model = _fallback(args, cfg, 'model', 'mistral')
+        rag_persist = _fallback(args, cfg, 'rag_persist', '../.chroma')
+        ollama_keep_alive = _fallback(args, cfg, 'ollama_keep_alive', '5m')
+        ollama_url = _fallback(args, cfg, 'ollama_url')
+        http_timeout = _fallback(args, cfg, 'http_timeout')
+        prep_cmd = [
+            str(BIN), str(QUIZ_DIR / 'generate_quiz.py'),
+            '--count', str(args.get('count', 5)),
+            '--quiz', str(_fallback(args, cfg, 'quiz', 'quiz.json')),
+            '--answers', str(_fallback(args, cfg, 'answers', 'answer_key.json')),
+            '--avoid-recent-window', str(args.get('avoid_recent_window', 5)),
+            '--rag-persist', str(rag_persist),
+            '--rag-k', str(rag_k),
+            '--max-retries', str(args.get('max_retries', 2)),
+            '--llm-retries', str(llm_retries),
+            '--ollama-keep-alive', str(ollama_keep_alive),
+            '--ollama-model', str(model),
+            '--rag-local',
+            '--emit-stdout',
+        ]
+        if ollama_url:
+            prep_cmd += ['--ollama-url', str(ollama_url)]
+        if http_timeout:
+            prep_cmd += ['--http-timeout', str(http_timeout)]
+        if rag_embed_model:
+            prep_cmd += ['--rag-embed-model', str(rag_embed_model)]
+
+        # Build validate command to read from stdin and still use env wiring
+        raw_args = cfg.get('validate')
+        v_args = raw_args if isinstance(raw_args, dict) else {}
+        validated_out = _fallback(v_args, cfg, 'validated_quiz', 'validated_quiz.json')
+        v_env = dict(_os.environ)
+        # Reuse env wiring from run_validate
+        ollama_url = _fallback(v_args, cfg, 'ollama_url')
+        http_timeout = _fallback(v_args, cfg, 'http_timeout')
+        model = _fallback(v_args, cfg, 'model', 'mistral')
+        llm_retries = _fallback(v_args, cfg, 'llm_retries', 2)
+        ollama_keep_alive = _fallback(v_args, cfg, 'ollama_keep_alive', '5m')
+        rag_persist = _fallback(v_args, cfg, 'rag_persist', '../.chroma/baai-bge-base-en-v1-5')
+        rag_k = _fallback(v_args, cfg, 'rag_k', 5)
+        rag_embed_model = _fallback(v_args, cfg, 'rag_embed_model', 'BAAI/bge-base-en-v1.5')
+        sqlite_db = _fallback(v_args, cfg, 'sqlite_db', 'quiz.db')
+        if ollama_url: v_env['OLLAMA_URL'] = str(ollama_url)
+        if http_timeout: v_env['OLLAMA_HTTP_TIMEOUT'] = str(http_timeout)
+        if model: v_env['OLLAMA_MODEL'] = str(model)
+        if llm_retries is not None: v_env['LLM_RETRIES'] = str(llm_retries)
+        if ollama_keep_alive: v_env['OLLAMA_KEEP_ALIVE'] = str(ollama_keep_alive)
+        if validated_out: v_env['VALIDATED_QUIZ'] = str(validated_out)
+        if rag_persist: v_env['RAG_PERSIST'] = str(rag_persist)
+        if rag_k is not None: v_env['RAG_K'] = str(rag_k)
+        if rag_embed_model: v_env['RAG_EMBED_MODEL'] = str(rag_embed_model)
+        if sqlite_db:
+            try:
+                _ensure_sqlite_db(Path(str(sqlite_db)))
+                v_env['SQLITE_DB'] = str(sqlite_db)
+            except Exception as _e:
+                print(f"[warn] Could not initialize SQLite DB at {sqlite_db}: {_e}")
+        dump_payload = _fallback(v_args, cfg, 'dump_llm_payload')
+        dump_response = _fallback(v_args, cfg, 'dump_llm_response')
+        dump_prompt = _fallback(v_args, cfg, 'dump_ollama_prompt')
+        if dump_payload: v_env['DUMP_LLM_PAYLOAD'] = str(dump_payload)
+        if dump_response: v_env['DUMP_LLM_RESPONSE'] = str(dump_response)
+        if dump_prompt: v_env['DUMP_OLLAMA_PROMPT'] = str(dump_prompt)
+
+        val_cmd = [str(BIN), str(QUIZ_DIR / 'validate_quiz_answers.py'), '--stdin', '--validated-out', str(validated_out)]
+
+        print('[run]', ' | '.join([' '.join(prep_cmd), ' '.join(val_cmd)]))
+        # Run prepare, capture stdout (logs + JSON), and extract the JSON payload only
+        prep = subprocess.run(prep_cmd, stdout=subprocess.PIPE, check=False)
+        prep_rc = prep.returncode
+        if prep_rc != 0:
+            return prep_rc
+        raw_out = prep.stdout.decode('utf-8', errors='ignore') if isinstance(prep.stdout, (bytes, bytearray)) else str(prep.stdout)
+        # Extract first balanced JSON object from the output
+        def _extract_json(s: str) -> str | None:
+            start = s.find('{')
+            if start == -1:
+                return None
+            depth = 0
+            in_str = False
+            esc = False
+            for i in range(start, len(s)):
+                ch = s[i]
+                if in_str:
+                    if esc:
+                        esc = False
+                    elif ch == '\\':
+                        esc = True
+                    elif ch == '"':
+                        in_str = False
+                else:
+                    if ch == '"':
+                        in_str = True
+                    elif ch == '{':
+                        depth += 1
+                    elif ch == '}':
+                        depth -= 1
+                        if depth == 0:
+                            return s[start:i+1]
+            return None
+        json_text = _extract_json(raw_out)
+        if not json_text:
+            print('[error] Could not locate JSON payload in prepare output')
+            return 1
+        # Best-effort: echo any non-JSON logs to the console so users still see timing/info
+        try:
+            before = raw_out.split(json_text, 1)[0]
+            after = raw_out.split(json_text, 1)[1]
+            leftover = (before + after).strip()
+            if leftover:
+                print(leftover)
+        except Exception:
+            pass
+        # Start validate, send only the JSON via stdin
+        val = subprocess.Popen(val_cmd, stdin=subprocess.PIPE, env=v_env)
+        _, _ = val.communicate(input=json_text.encode('utf-8'))
+        return val.returncode
     return 0
 
 if __name__ == '__main__':

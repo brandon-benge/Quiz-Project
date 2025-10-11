@@ -1,0 +1,18 @@
+You are validating a multiple choice question.
+Return ONLY the JSON literal True or False. No other text.
+
+Decision rule:
+- True if and only if ALL are satisfied:
+  1) The provided answer text corresponds to the correct option.
+  2) The answer makes sense given the question.
+  3) None of the other options are closer to correct.
+- False otherwise (including if another option is closer, conflicting, or none make sense).
+
+Question: ${question}
+Options:
+${options}
+Provided answer: ${provided_answer_text}
+Model explanation (if any): ${explanation}
+
+${context_section}
+Output:

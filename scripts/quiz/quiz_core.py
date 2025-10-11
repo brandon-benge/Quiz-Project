@@ -33,18 +33,18 @@ class Quiz:
     # history helpers are provided by questions.py
 
     def validate(self, questions: List[Question], expected: int) -> Optional[str]:
-        """Validate count, option cardinality, and normalize answer letters when possible; return error string or None."""
+        """Validate count, option cardinality, and that answer text matches one of the options; return error string or None."""
         if len(questions) != expected:
             return f'Expected {expected} questions, got {len(questions)}'
         for q in questions:
-            if q.answer.upper() not in ['A','B','C','D']:
-                lower = q.answer.strip().lower()
-                for idx,opt in enumerate(q.options):
-                    if lower == opt.lower() or opt.lower().startswith(lower[:5]):
-                        q.answer = chr(ord('A')+idx)
-                        break
             if len(q.options) != 4:
                 return f'Question {q.id} does not have 4 options'
+            # Ensure the answer is the exact text of one option
+            ans = (q.answer or '').strip().lower()
+            if not ans:
+                return f'Question {q.id} has empty answer text'
+            if all(ans != str(opt).strip().lower() for opt in q.options):
+                return f"Question {q.id} answer text does not match any option"
         return None
 
     def _gen_one(self, files_for_q: Dict[str,str], token: str,
