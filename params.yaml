@@ -30,7 +30,7 @@ prepare:
 
   # LLM model name used for generation (Ollama)
   # Examples: 'mistral', 'llama3:8b-instruct', 'qwen2.5:7b-instruct'
-  model: mistral
+  model: granite4
 
   # Number of questions to generate
   count: 10
@@ -87,6 +87,9 @@ prepare:
 validate:
   # Input files for validation (should match the outputs above)
   # quiz / answers now configured at the global level
+  
+  # Model to use for validation (should match prepare model for consistency)
+  model: granite4
 
 ## Interactive chat (sliding window + RAG)
 chat:
