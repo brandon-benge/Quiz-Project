@@ -9,10 +9,10 @@
 #   explicitly DISABLES that dump and prevents fallback to the base-level value.
 # - Setting a key to null or leaving it empty means "no value" (normal fallback applies).
 model: mistral                       # default Ollama model name
-rag_persist: ../.chroma/baai-bge-base-en-v1-5  # default vector store path
+rag_persist: ../.chroma/all-mpnet-base-v2  # default vector store path
 dump_llm_payload: llm_payload.json       # default payload dump path (newline JSON); set 'none' in a section to disable
 dump_llm_response: llm_response.json     # default response dump path (newline JSON); set 'none' in a section to disable
-rag_embed_model: BAAI/bge-base-en-v1.5   # embedding model id (MUST match store dimension)
+rag_embed_model: sentence-transformers/all-mpnet-base-v2   # embedding model id (MUST match store dimension)
 rag_k: 5                                 # number of retrieved chunks for RAG
 llm_retries: 2                           # transport-level retries for Ollama HTTP calls
 ollama_keep_alive: 5m                    # ask Ollama to keep the model loaded for this duration
@@ -40,7 +40,7 @@ prepare:
 
   # Path to the Chroma vector store (persist directory). Relative or absolute is fine.
   # Overrides base-level rag_persist when set.
-  rag_persist: ../.chroma/baai-bge-base-en-v1-5
+  rag_persist: ../.chroma/all-mpnet-base-v2
 
   # Top-K documents to retrieve for context per query/topic; overrides base-level rag_k when set.
   rag_k: 5
@@ -51,7 +51,7 @@ prepare:
   #   - sentence-transformers/all-mpnet-base-v2  # 768-dim
   #   - BAAI/bge-base-en-v1.5                    # 768-dim
   # Embedding model; overrides base-level rag_embed_model when set.
-  rag_embed_model: BAAI/bge-base-en-v1.5
+  rag_embed_model: sentence-transformers/all-mpnet-base-v2
 
   # Avoid reusing the last N generated question phrasings
   avoid_recent_window: 5
@@ -97,7 +97,7 @@ chat:
   # Decoding params
   temperature: 0.2
   # RAG settings (overrides base-level values when set)
-  rag_persist: ../.chroma/baai-bge-base-en-v1-5
+  rag_persist: ../.chroma/all-mpnet-base-v2
   # rag_k:
   # rag_embed_model:
   # Disable to skip retrieval

@@ -151,8 +151,8 @@ def auto_validate(quiz: List[Dict[str, Any]], key: Dict[str, Any], *, out_path: 
     rag = None
     try:
         cfg_like = type('Cfg', (), {})()
-        setattr(cfg_like, 'rag_persist', os.environ.get('RAG_PERSIST', '../.chroma/baai-bge-base-en-v1-5'))
-        setattr(cfg_like, 'rag_embed_model', os.environ.get('RAG_EMBED_MODEL', 'BAAI/bge-base-en-v1.5'))
+        setattr(cfg_like, 'rag_persist', os.environ.get('RAG_PERSIST', '../.chroma/all-mpnet-base-v2'))
+        setattr(cfg_like, 'rag_embed_model', os.environ.get('RAG_EMBED_MODEL', 'sentence-transformers/all-mpnet-base-v2'))
         setattr(cfg_like, 'rag_k', int(os.environ.get('RAG_K', '5')))
         setattr(cfg_like, 'no_rag', False)
         rag = RAG(cfg_like)  # type: ignore
