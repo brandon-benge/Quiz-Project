@@ -192,7 +192,7 @@ def run_validate(cfg: dict) -> int:
     llm_retries = _fallback(args, cfg, 'llm_retries', 2)
     ollama_keep_alive = _fallback(args, cfg, 'ollama_keep_alive', '5m')
     validated_out = _fallback(args, cfg, 'validated_quiz', 'validated_quiz.json')
-    rag_persist = _fallback(args, cfg, 'rag_persist', '../.chroma/all-mpnet-base-v2')
+    rag_persist = _fallback(args, cfg, 'rag_persist', '../.chroma/sentence-transformers-all-mpnet-base-v2')
     rag_k = _fallback(args, cfg, 'rag_k', 5)
     rag_embed_model = _fallback(args, cfg, 'rag_embed_model', 'sentence-transformers/all-mpnet-base-v2')
     no_rag = _fallback(args, cfg, 'no_rag', False)
@@ -256,7 +256,7 @@ def run_chat(cfg: dict) -> int:
     dump_payload = _fallback(args, cfg, 'dump_llm_payload')
     dump_response = _fallback(args, cfg, 'dump_llm_response')
     model = _fallback(args, cfg, 'model', 'mistral')
-    rag_persist = _fallback(args, cfg, 'rag_persist', '../.chroma/all-mpnet-base-v2')
+    rag_persist = _fallback(args, cfg, 'rag_persist', '../.chroma/sentence-transformers-all-mpnet-base-v2')
     ollama_keep_alive = _fallback(args, cfg, 'ollama_keep_alive', '5m')
     ollama_url = _fallback(args, cfg, 'ollama_url')
     http_timeout = _fallback(args, cfg, 'http_timeout')
@@ -338,6 +338,26 @@ def main(argv: list[str]) -> int:
     if a.target == 'prepare-validate':
         # Run prepare in emit-stdout mode and pipe to validate with --stdin
         import subprocess, os as _os
+        
+        # Query database BEFORE to get baseline counts
+        sqlite_db = _fallback(cfg.get('validate', {}), cfg, 'sqlite_db', 'quiz.db')
+        db_path = Path(str(sqlite_db))
+        questions_before = 0
+        answers_before = 0
+        if db_path.exists():
+            try:
+                import sqlite3
+                conn = sqlite3.connect(str(db_path))
+                cur = conn.cursor()
+                cur.execute("SELECT COUNT(*) FROM test_questions")
+                questions_before = cur.fetchone()[0]
+                cur.execute("SELECT COUNT(*) FROM test_answers")
+                answers_before = cur.fetchone()[0]
+                conn.close()
+                print(f'[info] Database baseline: {questions_before} questions, {answers_before} answers')
+            except Exception as e:
+                print(f'[warn] Could not query database before run: {e}')
+        
         print('[info] Running prepare→validate in-memory. This can take a while depending on question count and model speed...')
         # Build prepare command using existing function but override to include --emit-stdout
         args = cfg.get('prepare', {})
@@ -382,7 +402,7 @@ def main(argv: list[str]) -> int:
         model = _fallback(v_args, cfg, 'model', 'mistral')
         llm_retries = _fallback(v_args, cfg, 'llm_retries', 2)
         ollama_keep_alive = _fallback(v_args, cfg, 'ollama_keep_alive', '5m')
-        rag_persist = _fallback(v_args, cfg, 'rag_persist', '../.chroma/all-mpnet-base-v2')
+        rag_persist = _fallback(v_args, cfg, 'rag_persist', '../.chroma/sentence-transformers-all-mpnet-base-v2')
         rag_k = _fallback(v_args, cfg, 'rag_k', 5)
         rag_embed_model = _fallback(v_args, cfg, 'rag_embed_model', 'sentence-transformers/all-mpnet-base-v2')
         sqlite_db = _fallback(v_args, cfg, 'sqlite_db', 'quiz.db')
@@ -460,7 +480,29 @@ def main(argv: list[str]) -> int:
         # Start validate, send only the JSON via stdin
         val = subprocess.Popen(val_cmd, stdin=subprocess.PIPE, env=v_env)
         _, _ = val.communicate(input=json_text.encode('utf-8'))
-        return val.returncode
+        val_rc = val.returncode
+        
+        # Query database AFTER to show what changed
+        questions_after = 0
+        answers_after = 0
+        if db_path.exists():
+            try:
+                import sqlite3
+                conn = sqlite3.connect(str(db_path))
+                cur = conn.cursor()
+                cur.execute("SELECT COUNT(*) FROM test_questions")
+                questions_after = cur.fetchone()[0]
+                cur.execute("SELECT COUNT(*) FROM test_answers")
+                answers_after = cur.fetchone()[0]
+                conn.close()
+                
+                q_added = questions_after - questions_before
+                a_added = answers_after - answers_before
+                print(f'[info] Database after: {questions_after} questions (+{q_added}), {answers_after} answers (+{a_added})')
+            except Exception as e:
+                print(f'[warn] Could not query database after run: {e}')
+        
+        return val_rc
     return 0
 
 if __name__ == '__main__':

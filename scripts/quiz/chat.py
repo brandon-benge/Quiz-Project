@@ -170,7 +170,7 @@ def parse_args(argv: List[str]) -> ChatConfig:
     p.add_argument('--num-predict', type=int)
     p.add_argument('--top-k', type=int)
     p.add_argument('--top-p', type=float)
-    p.add_argument('--rag-persist', default='../.chroma/all-mpnet-base-v2')
+    p.add_argument('--rag-persist', default='../.chroma/sentence-transformers-all-mpnet-base-v2')
     p.add_argument('--rag-k', type=int, default=5)
     p.add_argument('--rag-embed-model', default='sentence-transformers/all-mpnet-base-v2')
     p.add_argument('--no-rag', action='store_true')
